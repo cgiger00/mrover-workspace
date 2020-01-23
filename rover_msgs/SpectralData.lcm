@@ -1,0 +1,22 @@
+package rover_msgs;
+
+struct SpectralData {
+	int16 r;
+	int16 g;
+	int16 a;
+	int16 s;
+	int16 h;
+	int16 b;
+	int16 t;
+	int16 i;
+	int16 c;
+	int16 u;
+	int16 j;
+	int16 d;
+	int16 v;
+	int16 k;
+	int16 e;
+	int16 w;
+	int16 l;
+	int16 f;
+}
