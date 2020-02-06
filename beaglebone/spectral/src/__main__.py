@@ -118,14 +118,15 @@ def get_data(msg):
     for i in dev_channels:
         virtual_write(DEV_SEL, i)
         print("device number:", virtual_read(DEV_SEL), i)
-        channel = 0;
+        channel = 0
         for j in dev_channels[i]:
             dev_channels[i][j] = get_decimal(channel_registers[channel][0], channel_registers[channel][1])
             channel += 1
     return dev_channels
 
 def spectral_callback(msg):
-    get_data(msg)
+    if ((virtual_read(0x04) & 0x02) == 2):
+        get_data(msg)
 
 def enableLED():
     virtual_write(0x07, virtual_read(0x07) | ~0xF7)
