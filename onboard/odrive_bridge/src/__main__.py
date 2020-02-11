@@ -14,39 +14,66 @@ def main():
     global lcm_
     lcm_ = lcm.LCM()
 
-    threading._start_new_thread(lcmThreaderMan, ())
-    OdriveBridge odrive_bridge;
+    global modrive
 
-    global event
-    event = "BOOT"
+    global legal_controller
+    global legal_axis
+
+    global vel_msg
+    global state_msg
+
+    global lock
+    global speedlock
+    global odrive_event
+
+    legal_controller = int(sys.argv[1])
+    legal_axis = sys.argv[2]
+
+    vel_msg = DriveVelData()
+    state_msg = DriveStateData()
+
+    speedlock = threading.Lock()
+    lock = threading.Lock()
+
+    threading._start_new_thread(lcmThreaderMan, ())
+    global odrive_bridge
+    odrive_bridge = OdriveBridge()
+
+    lock.acquire()
+    odrive_bridge.on_event("disconnected odrive")
+    odrive_bridge.on_event("disarm cmd")
+    odrive_bridge.on_event("arm cmd")
+    lock.release()
 
     while True:
         try:
-            event = odrive_bridge.on_event(event)
+            publish_state_msg(state_msg, str(self.state))
+            odrive_bridge.run()
+            
         except AttributeError:
-            print ("odrive disconnected")
-            event = "BOOT"
-        t.sleep(1)
+            lock.acquire()
+            odrive_bridge.on_event("disconnected odrive")
+            lock.release()
 
     exit()
 
 
 def lcmThreaderMan():
     lcm_1 = lcm.LCM()
-    lcm_1.subscribe("/drivestatecmd",
+    lcm_1.subscribe("/drive_state_cmd",
                     drivestatecmd_callback)
-    lcm_1.subscribe("/drivevelcmd", drivevelcmd_callback)
+    lcm_1.subscribe("/drive_vel_cmd", drivevelcmd_callback)
     while True:
         lcm_1.handle()
-        t.sleep(1)
 
-
-states = ["BOOT", "DISARMED", "ARMED", "ERROR", "CALIBRATING"]
+events = ["disconnected odrive", "disarm cmd", "arm cmd", "calibrate cmd", "odrive error"]
+states = ["DisconnectedState", "DisarmedState", "ArmedState", "CalibratingState", "ErrorState"]
 # Program states possible - BOOT,  DISARMED, ARMED, ERROR, CALIBRATING
 # 							1		 2	      3	      4       5
+
 class State(object):
     """
-    We define a state object which provides some utility functions for the
+    State object which provides some utility functions for the
     individual states within the state machine.
     """
 
@@ -61,41 +88,41 @@ class State(object):
 
     def __repr__(self):
         """
-        Leverages the __str__ method to describe the State.
+        Make it so __str__ method can describe the State.
         """
         return self.__str__()
 
     def __str__(self):
         """
         Returns the name of the State.
+        State state
+        str(state) = State
         """
         return self.__class__.__name__
-
-
-class DisconnectedState(State):
-    def on_event(self, event):
-        """
-        Handle events that are delegated to the Disconnected State.
-        """
-        if (event == "BOOT"):  # always goes from boot to disarm
-            return DisarmedState()
-        return self
 
 class DisarmedState(State):
     def on_event(self, event):
         """
         Handle events that are delegated to the Disarmed State.
         """
-        if (event == "BOOT"):
-            return DisconnectedState()
+        global modrive
+        if (event == "disconnected odrive"):
+            self.connect() 
+            modrive.disarm()
+            modrive.arm()
+            return ArmedState()        
+            # return DisarmedState()
 
-        elif (event == "ARMED"):
+        elif (event == "armed cmd"):
+            modrive.arm()
             return ArmedState()
 
-        elif (event == "CALIBRATING"):
-            return CalibratingState()
+        elif (event == "calibrating cmd"):
+            modrive.calibrate()  # does the whole while this wait sequence
+            modrive.disarm()
+            return DisarmedState()
 
-        elif (event == "ERROR"):
+        elif (event == "odrive errors"):
             return ErrorState()
 
         return self
@@ -105,23 +132,13 @@ class ArmedState(State):
         """
         Handle events that are delegated to the Armed State.
         """
-        if (event == "DISARMED"):
+        global modrive
+
+        if (event == "disarmed cmd"):
+            modrive.disarm()
             return DisarmedState()
 
-        elif (event == "ERROR"):
-            return ErrorState()
-
-        return self
-
-class CalibratingState(State):
-    def on_event(self, event):
-        """
-        Handle events that are delegated to the Calibrating State.
-        """
-        if (event == "CALIBRATING"):
-            return DisarmedState()
-
-        elif (event == "ERROR"):
+        elif (event == "odrive errors"):
             return ErrorState()
 
         return self
@@ -131,129 +148,82 @@ class ErrorState(State):
         """
         Handle events that are delegated to the Error State.
         """
-        if (event == "ERROR"):  # always tries to calibrate when it errors out
-            return ErrorState()
+        global modrive
+        try:
+            modrive.reboot()  # only runs after initial pairing
+        except:
+            print('channel error caught')
+        
+        self.connect()
+        return DisarmedState()
 
-        return self
-
-class OdriveBridge(object): #object = odrive 
-
-    state_to_event = {
-        "DisconnectedState" : "BOOT", 
-        "DisarmedState" : "DISARM",
-        "ArmedState" : "ARMED",
-        "ErrorState" : "ERROR",
-        "CalibratingState" : "CALIBRATING"
-        }
+class OdriveBridge(object): 
 
     def __init__(self):
-        """ Initialize the components. """
-        global odrive = None  # starting odrive
+        """ 
+        Initialize the components. 
+        Start with a Default State
+        """
+        self.state = DisarmedState()  # default is disarmed 
+        self.encoder_time = 0
+
+    def connect(self):
         global modrive
+        print("looking for odrive")
 
-        global legalController
-        global legalAxis
+        if sys.argv[1] == "0":
+            id = "2091358E524B"
+        elif sys.argv[1] == "1":
+            id = "20563591524B"
+        print(id)
 
-        legalController = int(sys.argv[1])
-        legalAxis = sys.argv[2]
-        if (legalAxis != "FRONT" and legalAxis != "BACK" and legalAxis != "BOTH"):
-            print("invalid odrive axis given")
+        odrive = odv.find_any(serial_number=id)
+        print("found odrive")
 
-        global msg
-        global msg1
-        msg = DriveVelData()
-        msg1 = DriveStateData()
-
-        global lock
-        lock = threading.Lock()
-
-        global encoderTime
-        encoderTime = 0
-
-        # Start with a default state.
-        self.state = DisconnectedState()
+        modrive = Modrive(odrive)  # arguments = odr
+        modrive.set_current_lim(100)
+        self.encoder_time = t.time()
 
     def on_event(self, event):
         """
         Incoming events are
         delegated to the given states which then handle the event. The result is
         then assigned as the new state.
+        The events we can send are disarm, arm, and calibrate.
         """
-        # events we can give are disarmed, armed, and calibrating
-        global lock
-        lock.acquire()
-
-        publish_state_msg(msg1, state_to_event[str(self.state)])
-        # publishes current state before events
-
-        errors = modrive.check_errors()
-        if errors:
-            # sets state to error
-            self.state = ErrorState()
-            event = "ERROR"
-
         self.state = self.state.on_event(event)
-        # gets the state that the odrive should be switched to 
 
-        if (self.state == DisconnectedState()):
-            try:
-                odrive.reboot()  # only runs after initial pairing
-            except:
-                print('channel error caught')
-            print("looking for odrive")
-
-            if sys.argv[1] == "0":
-                id = "2091358E524B"
-            if sys.argv[1] == "1":
-                id = "20563591524B"
-            print(id)
-
-            odrive = odv.find_any(serial_number=id)
-            print("found odrive")
-
-            modrive = Modrive(odrive)  # arguments = odr
-            modrive.reset()
-            modrive.set_current_lim(100)
-            modrive.set_velocity_ctrl()
-
-            # sets current state to disarmed
-            encoderTime = t.time()
-            # The next state will be the result of the on_event function.
-
-        elif (self.state == DisarmedState()):
-            if (t.time() - encoderTime > 0.1):
-                print("Sent Encoder Message")
-                encoderTime = t.time()
-                publish_encoder_msg(msg)
-
-            modrive.closed_loop_ctrl()
-            modrive.set_velocity_ctrl()
-
-            if (modrive.get_vel_estimate("FRONT") != 0 \
-                      or modrive.get_vel_estimate("BACK") != 0):
-                modrive.set_vel(legalAxis, 0)
-            modrive.idle()
+    def run(self):
+        if (self.state == DisarmedState()):
+            if (t.time() - self.encoder_time > 0.1):  # order is flipped? why?
+                self.encoder_time = publish_encoder_msg(msg)
 
         elif (self.state == ArmedState()):
-            modrive.closed_loop_ctrl()
-            modrive.set_velocity_crtl() # can only get to armed from disarmed !!! TODO: maybe fix 
+            global speedlock
+            global left_speed
+            global right_speed
 
-            if (encoderTime - t.time() > 0.1):
-                print("Sent Encoder Message")
-                encoderTime = publish_encoder_msg(msg)
-        
-        elif (self.state = CalibratingState()):
-            modrive.calibrate()  # does the whole while this wait sequence
-            front_state, back_state = modrive.get_current_state()
+            if (self.encoder_time - t.time() > 0.1):
+                self.encoder_time = publish_encoder_msg(msg)
 
-            # if both are idle it means its done calibrating
-            if front_state == AXIS_STATE_IDLE \
-                    and back_state == AXIS_STATE_IDLE:
-                modrive.set_current_lim(100)
-                modrive.set_velocity_ctrl()
+            speedlock.acquire()
+            modrive.set_vel("LEFT", left_speed)
+            modrive.set_vel("RIGHT", right_speed)
+            speedlock.release()
 
-        lock.release()
+        errors = modrive.check_errors()
 
+        if errors:
+            self.on_event("odrive error")
+            # first time will set to ErrorState
+            # second time will reboot
+
+    def get_state():
+        return str(self.state)
+
+""" 
+call backs
+"""
 
 def publish_state_msg(msg, state):
     msg.state = states.index(state)
@@ -261,62 +231,51 @@ def publish_state_msg(msg, state):
     lcm_.publish("/drivestatedata", msg.encode())
     print("changed state to " + state)
 
-
 def publish_encoder_helper(msg, axis):
+    global modrive
     msg.measuredCurrent = modrive.get_iq_measured(axis)
     msg.estimatedVel = modrive.get_vel_estimate(axis)
 
-    motor_map = {("BACK", 0): 2, ("BACK", 1): 3,
-                 ("FRONT", 0): 0, ("FRONT", 1): 1}
+    motor_map = {("LEFT", 0): 0, ("RIGHT", 0): 1,
+                 ("LEFT", 1): 2, ("RIGHT", 1): 3}
     msg.axis = motor_map[(axis, legalController)]
 
-    lcm_.publish("/driveveldata", msg.encode())
+    lcm_.publish("/drive_vel_data", msg.encode())
 
 
 def publish_encoder_msg(msg):
-    if (legalAxis == "BOTH"):
-        publish_encoder_helper(msg, "FRONT")
-        publish_encoder_helper(msg, "BACK")
-    else:
-        publish_encoder_helper(msg, legalAxis)
+    publish_encoder_helper(msg, "LEFT")
+    publish_encoder_helper(msg, "RIGHT")
     return t.time()
 
 
-def drivestatecmd_callback(channel, msg):
+def drive_state_cmd_callback(channel, msg):
     print("requested state call back is being called")
-    global event
-    global modrive
+    global odrive_bridge
+    global legal_controller
 
-    controller_list = ["DISARMED", "ARMED", "CALIBRATING"]
+    command_list = ["disarm cmd", "armd cmd", "calibrating cmd"]
     lock.acquire()
-    message = DriveStateCmd.decode(msg)
-    if message.controller == int(sys.argv[1]):  # Check which controller
-        event = controller_list[message.state - 1]
+    cmd = DriveStateCmd.decode(msg)
+    if cmd.controller == legal_controller:  # Check which controller
+        odrive_bridge.on_event(command_list[cmd.state - 1])
     lock.release()
 
 
-def drivevelcmd_callback(channel, msg):
-    # if the program is in an ARMED state
-    #   set the odrive's velocity to the float specified in the message
+def drive_vel_cmd_callback(channel, msg):
+    # set the odrive's velocity to the float specified in the message
     # no state change
-    axes = ["FRONT", "FRONT", "BACK", "BACK"]
 
-    lock.acquire()
-    global event
-    global modrive
-    global legalAxis
+    global left_speed
+    global right_speed
+    global speedlock
 
-    message = DriveVelCmd.decode(msg)
-    try:
-        if(event == "ARMED"):
-            modrive.closed_loop_ctrl()
-            modrive.set_vel(axes[message.axis], message.vel)
+    cmd = DriveVelCmd.decode(msg)
 
-    except AttributeError:
-        print("odrive disconnected")
-
-    lock.release()
-
+    speedlock.acquire()
+    left_speed = cmd.left
+    right_speed = cmd.right
+    speedlock.release()
 
 if __name__ == "__main__":
     main()
@@ -324,8 +283,6 @@ if __name__ == "__main__":
 
 class Modrive:
     CURRENT_LIM = 30
-
-    odrive_axies = ["FRONT", "FRONT", "BACK", "BACK"]
 
     def __init__(self, odr):
         self.odrive = odr
@@ -340,11 +297,46 @@ class Modrive:
             return getattr(self, attr)
         return getattr(self.odrive, attr)
 
+    def calibrate(self):
+        self._reset(self.front_axis)
+        self._reset(self.back_axis)
+        self.odrive.save_configuration()
+        # the guide says to reboot here...
+
+        self._requested_state("LEFT", AXIS_STATE_FULL_CALIBRATION_SEQUENCE)
+        while (self.get_current_state("RIGHT") != AXIS_STATE_IDLE):
+            pass
+        self._requested_state("LEFT", AXIS_STATE_FULL_CALIBRATION_SEQUENCE)
+        while (self.get_current_state("RIGHT") != AXIS_STATE_IDLE):
+            pass
+        
+        front_state, back_state = self.get_current_state()
+
+        # if both are idle it means its done calibrating
+        if front_state == AXIS_STATE_IDLE \
+                and back_state == AXIS_STATE_IDLE:
+            self._pre_calibrate(self.front_axis)
+            self._pre_calibrate(self.back_axis)
+            self.odrive.save_configuration()
+            # also says to reboot here...
+
+    def disarm(self):
+        self.set_current_lim(100)
+        self.closed_loop_ctrl()
+        self.set_velocity_ctrl()
+
+        self.set_vel("LEFT", 0)
+        self.set_vel("RIGHT", 0)
+
+        self.idle()
+
+    def arm(self):
+        self.closed_loop_ctrl()
+        self.set_velocity_crtl()
+
     def set_current_lim(self, lim):
         self.front_axis.motor.config.current_lim = lim
         self.back_axis.motor.config.current_lim = lim
-
-    # odrive.axis0.controller.config.control_mode = CTRL_MODE_VELOCITY_CONTROL
 
     def _set_control_mode(self, mode):
         self.front_axis.controller.config.control_mode = mode
@@ -353,57 +345,34 @@ class Modrive:
     def set_velocity_ctrl(self):
         self._set_control_mode(CTRL_MODE_VELOCITY_CONTROL)
 
-    # odrive.axis0.motor.current_control.Iq_measured
-
     def get_iq_measured(self, axis):
-        if (axis == "FRONT"):
+        if (axis == "LEFT"):
             return self.front_axis.motor.current_control.Iq_measured
-        elif(axis == "BACK"):
+        elif(axis == "RIGHT"):
             return self.back_axis.motor.current_control.Iq_measured
-        else:
-            print("ERROR: cant get the measured iq for both motors at once")
-            return 0
 
-    # odrive.axis0.encoder.vel_estimate
     def get_vel_estimate(self, axis):
         # axis = self.odrive[axis_number]
-        if (axis == "FRONT"):
+        if (axis == "LEFT"):
             return self.front_axis.encoder.vel_estimate
-        elif(axis == "BACK"):
+        elif(axis == "RIGHT"):
             return self.back_axis.encoder.vel_estimate
 
-    def calibrate(self):
-        modrive._requested_state("FRONT", AXIS_STATE_FULL_CALIBRATION_SEQUENCE)
-        while (modrive.get_current_state("FRONT") != AXIS_STATE_IDLE):
-            t.sleep(0.1)
-        modrive._requested_state("BACK", AXIS_STATE_FULL_CALIBRATION_SEQUENCE)
-        while (modrive.get_current_state("BACK") != AXIS_STATE_IDLE):
-            t.sleep(0.1)
-
     def idle(self):
-        self._requested_state("BOTH", AXIS_STATE_IDLE)
+        self._requested_state(AXIS_STATE_IDLE)
 
     def closed_loop_ctrl(self):
-        self._requested_state("BOTH", AXIS_STATE_CLOSED_LOOP_CONTROL)
+        self._requested_state(AXIS_STATE_CLOSED_LOOP_CONTROL)
 
     def _requested_state(self, axis, state):
-        if (axis == "FRONT"):
-            self.front_axis.requested_state = state
-        elif (axis == "BACK"):
-                self.back_axis.requested_state = state
-        elif (axis == "BOTH"):
-            self.back_axis.requested_state = state
-            self.front_axis.requested_state = state
-
-    # odrive.axis0.encoder.vel_estimate == 0
+        self.back_axis.requested_state = state
+        self.front_axis.requested_state = state
 
     def set_vel(self, axis, vel):
-        if (axis == "FRONT"):
+        if (axis == "LEFT"):
             self.front_axis.controller.vel_setpoint = vel
-        elif axis == "BACK":
+        elif axis == "RIGHT":
             self.back_axis.controller.vel_setpoint = vel
-        else:
-            print("ERROR, unknown axis")
 
     def get_current_state(self):
         return (self.front_axis.current_state, self.back_axis.current_state)
@@ -412,7 +381,6 @@ class Modrive:
         m_axis.motor.config.pole_pairs = 15
         m_axis.motor.config.resistance_calib_max_voltage = 4
         m_axis.motor.config.requested_current_range = 25
-        # Requires config save and reboot
         m_axis.motor.config.current_control_bandwidth = 100
 
         m_axis.encoder.config.mode = ENCODER_MODE_HALL
@@ -424,11 +392,9 @@ class Modrive:
         m_axis.controller.config.vel_limit = 1000
         m_axis.controller.config.control_mode = CTRL_MODE_VELOCITY_CONTROL
 
-    def reset(self):
-        self._reset(self.front_axis)
-        self._reset(self.back_axis)
-        self.odrive.save_configuration()
-        #  odv.dump_errors(odrive, True) clears errors from last reboot
+    def _pre_calibrate(self, m_axis):
+        self.m_axis.motor.config.pre_calibrated = True
+        self.m_axis.encoder.config.pre_calibrated = True
 
     def check_errors(self):
         front = self.front_axis.error
