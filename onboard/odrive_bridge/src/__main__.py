@@ -26,7 +26,6 @@ def main():
 
     global lock
     global speedlock
-    global odrive_event
 
     legal_controller = int(sys.argv[1])
     legal_axis = sys.argv[2]
@@ -43,8 +42,12 @@ def main():
 
     lock.acquire()
     odrive_bridge.on_event("disconnected odrive")
-    odrive_bridge.on_event("disarm cmd")
-    odrive_bridge.on_event("arm cmd")
+    """
+    this sequence will start after odrive_bridge.run() is called
+    looks for odrive --> goes to disarmed
+    disarms --> goes to armed
+    arms --> stay in armed
+    """
     lock.release()
 
     while True:
@@ -69,9 +72,9 @@ def lcmThreaderMan():
         lcm_1.handle()
 
 events = ["disconnected odrive", "disarm cmd", "arm cmd", "calibrate cmd", "odrive error"]
-states = ["DisconnectedState", "DisarmedState", "ArmedState", "CalibratingState", "ErrorState"]
-# Program states possible - BOOT,  DISARMED, ARMED, ERROR, CALIBRATING
-# 							1		 2	      3	      4       5
+states = ["DisconnectedState", "DisarmedState", "ArmedState", "ErrorState"]
+# Program states possible - BOOT,  DISARMED, ARMED, ERROR
+# 							1		 2	      3	      4 
 
 class State(object):
     """
@@ -102,6 +105,19 @@ class State(object):
         """
         return self.__class__.__name__
 
+class DisconnectedState(State):
+    def on_event(self, event):
+        """
+        Handle events that are delegated to the Disconnected State.
+        """
+        global modrive
+        if (event == "arm cmd"):
+            modrive.disarm()
+            modrive.arm()
+            return ArmedState()
+
+        return self 
+
 class DisarmedState(State):
     def on_event(self, event):
         """
@@ -110,17 +126,16 @@ class DisarmedState(State):
         global modrive
         if (event == "disconnected odrive"):
             self.connect() 
-            modrive.disarm()
-            modrive.arm()
-            return ArmedState()        
-            # return DisarmedState()
+            return DisconnectedState()        
 
         elif (event == "armed cmd"):
             modrive.arm()
             return ArmedState()
 
         elif (event == "calibrating cmd"):
-            modrive.calibrate()  # does the whole while this wait sequence
+            # sequence can be moved to armed ?
+            modrive.calibrate()
+            print ("done calibrating")
             modrive.disarm()
             return DisarmedState()
 
@@ -141,10 +156,8 @@ class ArmedState(State):
             return DisarmedState()
 
         elif (event == "disconnected odrive"):
-            self.reconnect()
-            self.disarm()
-            self.arm()
-            return ArmedState()
+            self.connect()
+            return DisconnectedState()
 
         elif (event == "odrive errors"):
             return ErrorState()
@@ -157,14 +170,16 @@ class ErrorState(State):
         Handle events that are delegated to the Error State.
         """
         global modrive
-        print(dump_errors(modrive.odrive))
-        try:
-            modrive.reboot()  # only runs after initial pairing
-        except:
-            print('channel error caught')
-        
-        self.connect()
-        return DisarmedState()
+        print(dump_errors(modrive.odrive, True))
+        if (event == "odrive errors"):
+            try:
+                modrive.reboot()  # only runs after initial pairing
+            except:
+                print('channel error caught')
+            
+            return DisconnectedState()
+
+        return self 
 
 class OdriveBridge(object): 
 
@@ -178,17 +193,15 @@ class OdriveBridge(object):
 
     def connect(self):
         global modrive
+        global legal_controller
         print("looking for odrive")
+        odrives = ["2091358E524B", "20563591524B"]
+        id = odrive[legal_controller]
 
-        if sys.argv[1] == "0":
-            id = "2091358E524B"
-        elif sys.argv[1] == "1":
-            id = "20563591524B"
         print(id)
-
         odrive = odv.find_any(serial_number=id)
-        print("found odrive")
 
+        print("found odrive")
         modrive = Modrive(odrive)  # arguments = odr
         modrive.set_current_lim(100)
         self.encoder_time = t.time()
@@ -196,9 +209,9 @@ class OdriveBridge(object):
     def on_event(self, event):
         """
         Incoming events are
-        delegated to the given states which then handle the event. The result is
-        then assigned as the new state.
-        The events we can send are disarm, arm, and calibrate.
+        delegated to the given states which then handle the event. 
+        The result is then assigned as the new state.
+        The events we can send are disarm cmd, arm cmd, and calibrate cmd.
         """
         self.state = self.state.on_event(event)
 
@@ -220,6 +233,11 @@ class OdriveBridge(object):
             modrive.set_vel("RIGHT", right_speed)
             speedlock.release()
 
+        elif (self.state == DisconnectedState()):
+            lock.acquire()
+            self.on_event("arm cmd")
+            lock.release()
+
         errors = modrive.check_errors()
 
         if errors:
@@ -237,19 +255,21 @@ call backs
 """
 
 def publish_state_msg(msg, state):
+    global legal_controller
     msg.state = states.index(state)
-    msg.controller = int(sys.argv[1])
+    msg.controller = legal_controller
     lcm_.publish("/drive_state_data", msg.encode())
     print("changed state to " + state)
 
 def publish_encoder_helper(msg, axis):
     global modrive
+    global legal_controller
     msg.measuredCurrent = modrive.get_iq_measured(axis)
     msg.estimatedVel = modrive.get_vel_estimate(axis)
 
     motor_map = {("LEFT", 0): 0, ("RIGHT", 0): 1,
                  ("LEFT", 1): 2, ("RIGHT", 1): 3}
-    msg.axis = motor_map[(axis, legalController)]
+    msg.axis = motor_map[(axis, legal_controller)]
 
     lcm_.publish("/drive_vel_data", msg.encode())
 
@@ -329,7 +349,7 @@ class Modrive:
             self._pre_calibrate(self.front_axis)
             self._pre_calibrate(self.back_axis)
             self.odrive.save_configuration()
-            # also says to reboot here...
+        # also says to reboot here...
 
     def disarm(self):
         self.set_current_lim(100)
