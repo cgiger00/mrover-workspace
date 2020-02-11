@@ -9,6 +9,8 @@ from odrive.enums import AXIS_STATE_CLOSED_LOOP_CONTROL, \
     CTRL_MODE_VELOCITY_CONTROL, AXIS_STATE_FULL_CALIBRATION_SEQUENCE, \
     AXIS_STATE_IDLE, ENCODER_MODE_HALL
 
+from odrive.utils import dump_errors
+
 
 def main():
     global lcm_
@@ -61,8 +63,8 @@ def main():
 def lcmThreaderMan():
     lcm_1 = lcm.LCM()
     lcm_1.subscribe("/drive_state_cmd",
-                    drivestatecmd_callback)
-    lcm_1.subscribe("/drive_vel_cmd", drivevelcmd_callback)
+                    drive_state_cmd_callback)
+    lcm_1.subscribe("/drive_vel_cmd", drive_vel)cmd_callback)
     while True:
         lcm_1.handle()
 
@@ -138,6 +140,12 @@ class ArmedState(State):
             modrive.disarm()
             return DisarmedState()
 
+        elif (event == "disconnected odrive"):
+            self.reconnect()
+            self.disarm()
+            self.arm()
+            return ArmedState()
+
         elif (event == "odrive errors"):
             return ErrorState()
 
@@ -149,6 +157,7 @@ class ErrorState(State):
         Handle events that are delegated to the Error State.
         """
         global modrive
+        print(dump_errors(modrive.odrive))
         try:
             modrive.reboot()  # only runs after initial pairing
         except:
@@ -196,7 +205,7 @@ class OdriveBridge(object):
     def run(self):
         if (self.state == DisarmedState()):
             if (t.time() - self.encoder_time > 0.1):  # order is flipped? why?
-                self.encoder_time = publish_encoder_msg(msg)
+                self.encoder_time = publish_encoder_msg(vel_msg)
 
         elif (self.state == ArmedState()):
             global speedlock
@@ -204,7 +213,7 @@ class OdriveBridge(object):
             global right_speed
 
             if (self.encoder_time - t.time() > 0.1):
-                self.encoder_time = publish_encoder_msg(msg)
+                self.encoder_time = publish_encoder_msg(vel_msg)
 
             speedlock.acquire()
             modrive.set_vel("LEFT", left_speed)
@@ -214,7 +223,9 @@ class OdriveBridge(object):
         errors = modrive.check_errors()
 
         if errors:
+            lock.acquire()
             self.on_event("odrive error")
+            lock.release()
             # first time will set to ErrorState
             # second time will reboot
 
@@ -228,7 +239,7 @@ call backs
 def publish_state_msg(msg, state):
     msg.state = states.index(state)
     msg.controller = int(sys.argv[1])
-    lcm_.publish("/drivestatedata", msg.encode())
+    lcm_.publish("/drive_state_data", msg.encode())
     print("changed state to " + state)
 
 def publish_encoder_helper(msg, axis):
