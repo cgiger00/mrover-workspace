@@ -52,9 +52,9 @@ def main():
 
     while True:
         try:
-            publish_state_msg(state_msg, str(self.state))
+            publish_state_msg(state_msg, odrive_bridge.get_state())
             odrive_bridge.run()
-            
+
         except AttributeError:
             lock.acquire()
             odrive_bridge.on_event("disconnected odrive")
@@ -65,16 +65,17 @@ def main():
 
 def lcmThreaderMan():
     lcm_1 = lcm.LCM()
-    lcm_1.subscribe("/drive_state_cmd",
-                    drive_state_cmd_callback)
-    lcm_1.subscribe("/drive_vel_cmd", drive_vel)cmd_callback)
+    lcm_1.subscribe("/drive_state_cmd", drive_state_cmd_callback)
+    lcm_1.subscribe("/drive_vel_cmd", drive_vel_cmd_callback)
     while True:
         lcm_1.handle()
+
 
 events = ["disconnected odrive", "disarm cmd", "arm cmd", "calibrate cmd", "odrive error"]
 states = ["DisconnectedState", "DisarmedState", "ArmedState", "ErrorState"]
 # Program states possible - BOOT,  DISARMED, ARMED, ERROR
-# 							1		 2	      3	      4 
+# 							1		 2	      3	      4
+
 
 class State(object):
     """
@@ -83,7 +84,7 @@ class State(object):
     """
 
     def __init__(self):
-        print 'Processing current state:', str(self)
+        print('Processing current state:', str(self))
 
     def on_event(self, event):
         """
@@ -105,6 +106,7 @@ class State(object):
         """
         return self.__class__.__name__
 
+
 class DisconnectedState(State):
     def on_event(self, event):
         """
@@ -116,7 +118,8 @@ class DisconnectedState(State):
             modrive.arm()
             return ArmedState()
 
-        return self 
+        return self
+
 
 class DisarmedState(State):
     def on_event(self, event):
@@ -125,8 +128,7 @@ class DisarmedState(State):
         """
         global modrive
         if (event == "disconnected odrive"):
-            self.connect() 
-            return DisconnectedState()        
+            return DisconnectedState()
 
         elif (event == "armed cmd"):
             modrive.arm()
@@ -135,7 +137,7 @@ class DisarmedState(State):
         elif (event == "calibrating cmd"):
             # sequence can be moved to armed ?
             modrive.calibrate()
-            print ("done calibrating")
+            print("done calibrating")
             modrive.disarm()
             return DisarmedState()
 
@@ -143,6 +145,7 @@ class DisarmedState(State):
             return ErrorState()
 
         return self
+
 
 class ArmedState(State):
     def on_event(self, event):
@@ -156,13 +159,13 @@ class ArmedState(State):
             return DisarmedState()
 
         elif (event == "disconnected odrive"):
-            self.connect()
             return DisconnectedState()
 
         elif (event == "odrive errors"):
             return ErrorState()
 
         return self
+
 
 class ErrorState(State):
     def on_event(self, event):
@@ -176,19 +179,20 @@ class ErrorState(State):
                 modrive.reboot()  # only runs after initial pairing
             except:
                 print('channel error caught')
-            
+
             return DisconnectedState()
 
-        return self 
+        return self
 
-class OdriveBridge(object): 
+
+class OdriveBridge(object):
 
     def __init__(self):
-        """ 
-        Initialize the components. 
+        """
+        Initialize the components.
         Start with a Default State
         """
-        self.state = DisarmedState()  # default is disarmed 
+        self.state = DisarmedState()  # default is disarmed
         self.encoder_time = 0
 
     def connect(self):
@@ -196,7 +200,7 @@ class OdriveBridge(object):
         global legal_controller
         print("looking for odrive")
         odrives = ["2091358E524B", "20563591524B"]
-        id = odrive[legal_controller]
+        id = odrives[legal_controller]
 
         print(id)
         odrive = odv.find_any(serial_number=id)
@@ -209,10 +213,13 @@ class OdriveBridge(object):
     def on_event(self, event):
         """
         Incoming events are
-        delegated to the given states which then handle the event. 
+        delegated to the given states which then handle the event.
         The result is then assigned as the new state.
         The events we can send are disarm cmd, arm cmd, and calibrate cmd.
         """
+        if (event == "disconnected odrive"):
+            self.connect()
+
         self.state = self.state.on_event(event)
 
     def run(self):
@@ -247,12 +254,14 @@ class OdriveBridge(object):
             # first time will set to ErrorState
             # second time will reboot
 
-    def get_state():
+    def get_state(self):
         return str(self.state)
 
-""" 
+
+"""
 call backs
 """
+
 
 def publish_state_msg(msg, state):
     global legal_controller
@@ -260,6 +269,7 @@ def publish_state_msg(msg, state):
     msg.controller = legal_controller
     lcm_.publish("/drive_state_data", msg.encode())
     print("changed state to " + state)
+
 
 def publish_encoder_helper(msg, axis):
     global modrive
@@ -308,6 +318,7 @@ def drive_vel_cmd_callback(channel, msg):
     right_speed = cmd.right
     speedlock.release()
 
+
 if __name__ == "__main__":
     main()
 
@@ -340,7 +351,7 @@ class Modrive:
         self._requested_state("LEFT", AXIS_STATE_FULL_CALIBRATION_SEQUENCE)
         while (self.get_current_state("RIGHT") != AXIS_STATE_IDLE):
             pass
-        
+
         front_state, back_state = self.get_current_state()
 
         # if both are idle it means its done calibrating
