@@ -3,6 +3,7 @@ import sys
 import time as t
 import odrive as odv
 import threading
+import fibre
 from rover_msgs import DriveStateCmd, DriveVelCmd, \
     DriveStateData, DriveVelData
 from odrive.enums import AXIS_STATE_CLOSED_LOOP_CONTROL, \
@@ -17,6 +18,11 @@ def main():
     lcm_ = lcm.LCM()
 
     global modrive
+    global left_speed
+    global right_speed
+
+    left_speed = 0.0
+    right_speed = 0.0
 
     global legal_controller
     global legal_axis
@@ -39,18 +45,14 @@ def main():
     threading._start_new_thread(lcmThreaderMan, ())
     global odrive_bridge
     odrive_bridge = OdriveBridge()
-
-    lock.acquire()
-    odrive_bridge.on_event("disconnected odrive")
-    lock.release()
+    # starting state is DisconnectedState()
     # start up sequence is called, disconnected-->disarm-->arm
 
     while True:
         try:
-            publish_state_msg(state_msg, odrive_bridge.get_state())
             odrive_bridge.update()
 
-        except AttributeError:
+        except fibre.protocol.ChannelBrokenException:
             lock.acquire()
             odrive_bridge.on_event("disconnected odrive")
             lock.release()
@@ -125,7 +127,7 @@ class DisarmedState(State):
         if (event == "disconnected odrive"):
             return DisconnectedState()
 
-        elif (event == "armed cmd"):
+        elif (event == "arm cmd"):
             modrive.arm()
             return ArmedState()
 
@@ -149,7 +151,7 @@ class ArmedState(State):
         """
         global modrive
 
-        if (event == "disarmed cmd"):
+        if (event == "disarm cmd"):
             modrive.disarm()
             return DisarmedState()
 
@@ -169,7 +171,7 @@ class ErrorState(State):
         """
         global modrive
         print(dump_errors(modrive.odrive, True))
-        if (event == "odrive errors"):
+        if (event == "odrive error"):
             try:
                 modrive.reboot()  # only runs after initial pairing
             except:
@@ -187,7 +189,8 @@ class OdriveBridge(object):
         Initialize the components.
         Start with a Default State
         """
-        self.state = DisarmedState()  # default is disarmed
+        global modrive
+        self.state = DisconnectedState()  # default is disarmed
         self.encoder_time = 0
 
     def connect(self):
@@ -212,21 +215,21 @@ class OdriveBridge(object):
         The result is then assigned as the new state.
         The events we can send are disarm cmd, arm cmd, and calibrate cmd.
         """
-        if (event == "disconnected odrive"):
-            self.connect()
+
+        print("on event called, event:", event)
 
         self.state = self.state.on_event(event)
+        publish_state_msg(state_msg, odrive_bridge.get_state())
 
     def update(self):
-        if (self.state == DisarmedState()):
+        if (str(self.state) == "DisarmedState"):
             if (t.time() - self.encoder_time > 0.1):  # order is flipped? why?
                 self.encoder_time = publish_encoder_msg(vel_msg)
 
-        elif (self.state == ArmedState()):
+        elif (str(self.state) == "ArmedState"):
             global speedlock
             global left_speed
             global right_speed
-
             if (self.encoder_time - t.time() > 0.1):
                 self.encoder_time = publish_encoder_msg(vel_msg)
 
@@ -235,7 +238,8 @@ class OdriveBridge(object):
             modrive.set_vel("RIGHT", right_speed)
             speedlock.release()
 
-        elif (self.state == DisconnectedState()):
+        elif (str(self.state) == "DisconnectedState"):
+            self.connect()
             lock.acquire()
             self.on_event("arm cmd")
             lock.release()
@@ -303,16 +307,20 @@ def drive_vel_cmd_callback(channel, msg):
     # set the odrive's velocity to the float specified in the message
     # no state change
 
-    global left_speed
-    global right_speed
     global speedlock
+    global odrive_bridge
+    try:
+        cmd = DriveVelCmd.decode(msg)
+        if (odrive_bridge.get_state() == "ArmedState"):
+            global left_speed
+            global right_speed
 
-    cmd = DriveVelCmd.decode(msg)
-
-    speedlock.acquire()
-    left_speed = cmd.left
-    right_speed = cmd.right
-    speedlock.release()
+            speedlock.acquire()
+            left_speed = cmd.left
+            right_speed = cmd.right
+            speedlock.release()
+    except NameError:
+        print("waiting to find odrive")
 
 
 if __name__ == "__main__":
@@ -370,7 +378,7 @@ class Modrive:
 
     def arm(self):
         self.closed_loop_ctrl()
-        self.set_velocity_crtl()
+        self.set_velocity_ctrl()
 
     def set_current_lim(self, lim):
         self.front_axis.motor.config.current_lim = lim
@@ -402,15 +410,15 @@ class Modrive:
     def closed_loop_ctrl(self):
         self._requested_state(AXIS_STATE_CLOSED_LOOP_CONTROL)
 
-    def _requested_state(self, axis, state):
+    def _requested_state(self, state):
         self.back_axis.requested_state = state
         self.front_axis.requested_state = state
 
     def set_vel(self, axis, vel):
         if (axis == "LEFT"):
-            self.front_axis.controller.vel_setpoint = vel
+            self.front_axis.controller.vel_setpoint = vel * 300
         elif axis == "RIGHT":
-            self.back_axis.controller.vel_setpoint = vel
+            self.back_axis.controller.vel_setpoint = vel * -300
 
     def get_current_state(self):
         return (self.front_axis.current_state, self.back_axis.current_state)
