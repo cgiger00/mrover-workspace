@@ -42,18 +42,13 @@ def main():
 
     lock.acquire()
     odrive_bridge.on_event("disconnected odrive")
-    """
-    this sequence will start after odrive_bridge.run() is called
-    looks for odrive --> goes to disarmed
-    disarms --> goes to armed
-    arms --> stay in armed
-    """
     lock.release()
+    # start up sequence is called, disconnected-->disarm-->arm
 
     while True:
         try:
             publish_state_msg(state_msg, odrive_bridge.get_state())
-            odrive_bridge.run()
+            odrive_bridge.update()
 
         except AttributeError:
             lock.acquire()
@@ -141,7 +136,7 @@ class DisarmedState(State):
             modrive.disarm()
             return DisarmedState()
 
-        elif (event == "odrive errors"):
+        elif (event == "odrive error"):
             return ErrorState()
 
         return self
@@ -161,7 +156,7 @@ class ArmedState(State):
         elif (event == "disconnected odrive"):
             return DisconnectedState()
 
-        elif (event == "odrive errors"):
+        elif (event == "odrive error"):
             return ErrorState()
 
         return self
@@ -222,7 +217,7 @@ class OdriveBridge(object):
 
         self.state = self.state.on_event(event)
 
-    def run(self):
+    def update(self):
         if (self.state == DisarmedState()):
             if (t.time() - self.encoder_time > 0.1):  # order is flipped? why?
                 self.encoder_time = publish_encoder_msg(vel_msg)
@@ -253,6 +248,7 @@ class OdriveBridge(object):
             lock.release()
             # first time will set to ErrorState
             # second time will reboot
+            # because the error flag is still true
 
     def get_state(self):
         return str(self.state)
@@ -295,12 +291,12 @@ def drive_state_cmd_callback(channel, msg):
     global odrive_bridge
     global legal_controller
 
-    command_list = ["disarm cmd", "armd cmd", "calibrating cmd"]
-    lock.acquire()
+    command_list = ["disarm cmd", "arm cmd", "calibrating cmd"]
     cmd = DriveStateCmd.decode(msg)
     if cmd.controller == legal_controller:  # Check which controller
+        lock.acquire()
         odrive_bridge.on_event(command_list[cmd.state - 1])
-    lock.release()
+        lock.release()
 
 
 def drive_vel_cmd_callback(channel, msg):
