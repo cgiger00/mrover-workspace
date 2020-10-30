@@ -47,10 +47,10 @@ In the terminal: \
 ```$ ./jarvis build lcm_tools/send``` 
 
 ### To Do
-- [ ] Validate that the spectral data being output is correct 
-- [ ] Run this code connected to the Jetson TX2
+- [x] Validate that the spectral data being output is correct 
+- [x] Run this code connected to the Jetson TX2
 
 ### Notes
-This code has been tested with python 3.7 on a beaglebone black. \
+This code has been tested with python 3.6 on a beaglebone black. \
 If you have any issues building the code, this is likely a result of not having the
 [correct packages installed](https://github.com/umrover/mrover-workspace/wiki/Jarvis-Build-System#trouble) or [not being connected to the internet](https://docs.google.com/document/d/1jvlgHowy4Wunztz6Fqz8K6ajLKeHnPeXIuHctarIlso/edit#heading=h.renhpmsh260w). 
