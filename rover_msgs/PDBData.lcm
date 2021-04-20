@@ -1,13 +1,13 @@
 struct PDBData {
     // TODO: name device constants
-	const int8_t 5V0 = 0;
-	const int8_t 5V1 = 1;
-	const int8_t 5V2 = 2;
-	const int8_t 5V3 = 3;
-	const int8_t 5V4 = 4;
-	const int8_t 5V5 = 5;
-	const int8_t 5V6 = 6;
-	const int8_t 5V7 = 7;
+    const int8_t 5V0 = 0;
+    const int8_t 5V1 = 1;
+    const int8_t 5V2 = 2;
+    const int8_t 5V3 = 3;
+    const int8_t 5V4 = 4;
+    const int8_t 5V5 = 5;
+    const int8_t 5V6 = 6;
+    const int8_t 5V7 = 7;
 
     double temps[8]; //celcius
     double voltage[8]; //volts
